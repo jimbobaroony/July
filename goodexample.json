@@ -1,0 +1,149 @@
+{
+  "Description" : "ProjectX scalable stack of frontal nodes",
+  "Parameters" : {
+    "AWSRegion" : {
+      "Type" : "String",
+      "Default" : "eu-west-1"
+    },
+    "InstanceName" : {
+      "Description" : "Logical instance name seen in AWS console",
+      "Type" : "String",
+      "Default" : "ProjectX-Live-Node"
+    },
+    "AvailabilityZones" : {
+      "Type" : "CommaDelimitedList",
+      "Default" : "eu-west-1a"
+    }
+  },
+
+"Mappings" : {
+    "AWSInstanceType2Arch" : {
+      "t1.micro"    : { "Arch" : "64" },
+      "m1.small"    : { "Arch" : "32" },
+      "m1.large"    : { "Arch" : "64" },
+      "m1.xlarge"   : { "Arch" : "64" },
+      "m2.xlarge"   : { "Arch" : "64" },
+      "m2.2xlarge"  : { "Arch" : "64" },
+      "m2.4xlarge"  : { "Arch" : "64" },
+      "c1.medium"   : { "Arch" : "32" },
+      "c1.xlarge"   : { "Arch" : "64" },
+      "cc1.4xlarge" : { "Arch" : "64" }
+    },
+    "AWSRegionArch2AMI" : {
+      "us-east-1" : { "32" : "ami-b89842d1", "64" : "ami-3c994355" },
+      "us-west-1" : { "32" : "ami-d5712a90", "64" : "ami-e7712aa2" },
+      "eu-west-1" : { "32" : "ami-25e8d351", "64" : "ami-3b65664f" }
+    }
+  },
+
+  "Resources" : {
+    "NodeGroup" : {
+      "Type" : "AWS::AutoScaling::AutoScalingGroup",
+      "Properties" : {
+        "AvailabilityZones" : {"Ref": "AvailabilityZones"},
+        "LaunchConfigurationName" : { "Ref" : "LaunchConfig" },
+        "MinSize" : "1",
+        "MaxSize" : "2",
+        "078600" : [ { "Ref" : "ElasticLoadBalancer" } ],
+        "Tags" : [
+                {"Key" : "Client", "Value" : "ProjectX", "PropagateAtLaunch" : "true"}, 
+                {"Key" : "Type", "Value" : "Prod", "PropagateAtLaunch" : "true"},
+                {"Key" : "Use", "Value" : "Web", "PropagateAtLaunch" : "true"},
+                {"Key" : "Name", "Value" : {"Ref" : "InstanceName"}, "PropagateAtLaunch" : "true"}
+        ] 
+      }
+   },
+
+    "LaunchConfig" : {
+      "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "Properties" : {
+        "ImageId" : { "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" },
+                                          { "Fn::FindInMap" : [ "AWSInstanceType2Arch", { "Ref" : "InstanceType" },
+                                          "Arch" ] } ] },
+        "SecurityGroups" : [{ "Ref" : "ProjectXNodeSecurityGroup" }],
+        "InstanceType" : {"Ref" : "InstanceType"},
+        "KeyName" : {"Ref": "SSHKeyName"}
+      }
+    },
+
+    "WebServerScaleUpPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "PercentChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "NodeGroup" },
+        "Cooldown" : "300",
+        "ScalingAdjustment" : "100"
+      }
+    },
+    "WebServerScaleDownPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "NodeGroup" },
+        "Cooldown" : "600",
+        "ScalingAdjustment" : "-1"
+      }
+    },
+
+    "CPUAlarmHigh": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-up if CPU > 40% for 10 minutes",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "120",
+        "EvaluationPeriods": "5",
+        "Threshold": "40",
+        "AlarmActions": [ { "Ref": "WebServerScaleUpPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "NodeGroup" }
+          }
+        ],
+        "ComparisonOperator": "GreaterThanThreshold"
+      }
+    },
+    "CPUAlarmLow": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-down if CPU <20% for 60 min",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "120",
+        "EvaluationPeriods": "30",
+        "Threshold": "20",
+        "AlarmActions": [ { "Ref": "WebServerScaleDownPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "NodeGroup" }
+          }
+        ],
+        "ComparisonOperator": "LessThanThreshold"
+      }
+    },
+
+
+
+    "ProjectXNodeSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Enable SSH access and HTTP access on the inbound port",
+        "SecurityGroupIngress" : 
+          [ { "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : "0.0.0.0/0" },
+            { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0" }
+          ]
+      }
+    }
+  },
+
+  "Outputs" : {
+    "URL" : {
+      "Description" : "The URL of the website",
+      "Value" :  { "Fn::Join" : [ "", [ "http://", { "Fn::GetAtt" : [ "ElasticLoadBalancer", "DNSName" ]}]]}
+    }
+  }
+}
